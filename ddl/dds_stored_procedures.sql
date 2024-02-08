@@ -19,62 +19,44 @@ END
 $$
 LANGUAGE plpgsql STABLE;
 
-CREATE OR REPLACE PROCEDURE dds.update_srv_wf_settings(p_wf_settings_schema text,
-						       p_source_table_schema text,
-						       p_source_table_name text,
-						       p_last_update_ts timestamp,
-						       p_workflow_key text,
-						       p_key text)
-AS
-$$
-DECLARE
-  v_query_tmpl text := 'INSERT INTO %1$s.srv_wf_settings(workflow_key, workflow_settings)
-			SELECT v.workflow_key
-			     , jsonb_build_object(v.search_key, v.update_ts) AS data
-			  FROM (SELECT date_trunc(%2$L, c.update_ts)::text AS update_ts
-				     , $2 AS workflow_key
-				     , $3 AS search_key
-			          FROM %3$s.%4$s c
-				 WHERE c.update_ts > $1
-				 ORDER BY c.update_ts DESC
-				 LIMIT 1
-			       ) v
-			    ON CONFLICT(workflow_key)
-			    DO UPDATE SET workflow_settings = EXCLUDED.workflow_settings';
-BEGIN
-  EXECUTE FORMAT(v_query_tmpl, p_wf_settings_schema, 'seconds', p_source_table_schema, p_source_table_name) 
-    USING p_last_update_ts, p_workflow_key, p_key;
-
-  EXECUTE FORMAT('ANALYZE %1$s.srv_wf_settings', p_wf_settings_schema);
-END
-$$
-LANGUAGE plpgsql;
-
 CREATE OR REPLACE PROCEDURE dds.fill_dm_users()
 AS
 $$
 DECLARE
   v_last_update_ts timestamp;
   v_wf_settings_schema text := 'dds';
-  v_source_table_schema text := 'stg';
-  v_source_table_name text := 'ordersystem_users';
   v_workflow_key text := 'dm_users';
   v_key text := 'last_update_ts';
   v_def_val text := '2022-01-01';
 BEGIN
   v_last_update_ts = dds.get_last_processed_val(v_wf_settings_schema, v_workflow_key, v_key, v_def_val)::timestamp;
 
-  INSERT INTO dds.dm_users(user_id, user_name, user_login)
+  WITH ds AS (
   SELECT u.object_value->>'_id' AS user_id
        , u.object_value->>'name' AS user_name
        , u.object_value->>'login' AS user_login
+       , (MAX(u.update_ts) OVER())::text AS max_update_ts
     FROM stg.ordersystem_users u
    WHERE u.update_ts > v_last_update_ts
-      ON CONFLICT(user_id) DO NOTHING;
-
-  CALL dds.update_srv_wf_settings(v_wf_settings_schema, v_source_table_schema, v_source_table_name, 
-				  v_last_update_ts, v_workflow_key, v_key);
-
+  ),
+  data AS (
+  INSERT INTO dds.dm_users(user_id, user_name, user_login)
+  SELECT d.user_id
+       , d.user_name
+       , d.user_login
+    FROM ds d
+      ON CONFLICT(user_id) DO NOTHING
+  )
+  INSERT INTO dds.srv_wf_settings(workflow_key, workflow_settings)
+  SELECT v_workflow_key
+       , jsonb_build_object(v_key, d.max_update_ts) 
+    FROM ds d
+   LIMIT 1
+      ON CONFLICT(workflow_key)
+      DO UPDATE SET workflow_settings = EXCLUDED.workflow_settings;
+      
+  ANALYZE dds.srv_wf_settings;
+  
   ANALYZE dds.dm_users;
 END
 $$
@@ -86,32 +68,41 @@ $$
 DECLARE
   v_last_update_ts timestamp;
   v_wf_settings_schema text := 'dds';
-  v_source_table_schema text := 'stg';
-  v_source_table_name text := 'deliverysystem_couriers';
   v_workflow_key text := 'dm_couriers';
   v_key text := 'last_update_ts';
   v_def_val text := '2022-01-01';
 BEGIN
   v_last_update_ts = dds.get_last_processed_val(v_wf_settings_schema, v_workflow_key, v_key, v_def_val)::timestamp;
-
+  
+  WITH ds AS (
+  SELECT c.object_id AS courier_id
+       , regexp_split_to_array(c.object_value->>'name', ' ') AS courier_name_surname
+       , (date_trunc('seconds', MAX(c.update_ts) OVER()))::text AS max_update_ts
+    FROM stg.deliverysystem_couriers c
+   WHERE c.update_ts > v_last_update_ts
+  ),
+  data AS (
   INSERT INTO dds.dm_couriers(courier_id, courier_name, courier_surname)
   SELECT v.courier_id
        , v.courier_name_surname[1] AS courier_name
        , v.courier_name_surname[2] AS courier_surname
-    FROM (SELECT c.object_id AS courier_id
-               , regexp_split_to_array(c.object_value->>'name', ' ') AS courier_name_surname
-            FROM stg.deliverysystem_couriers c
-           WHERE c.update_ts > v_last_update_ts
-         ) v
+    FROM ds v
       ON CONFLICT(courier_id)
       DO UPDATE
             SET courier_name = EXCLUDED.courier_name
               , courier_surname = EXCLUDED.courier_surname
           WHERE dm_couriers.courier_name != EXCLUDED.courier_name
-             OR dm_couriers.courier_surname != EXCLUDED.courier_surname;
+             OR dm_couriers.courier_surname != EXCLUDED.courier_surname
+  )
+  INSERT INTO dds.srv_wf_settings(workflow_key, workflow_settings)
+  SELECT v_workflow_key
+       , jsonb_build_object(v_key, d.max_update_ts) 
+    FROM ds d
+   LIMIT 1
+      ON CONFLICT(workflow_key)
+      DO UPDATE SET workflow_settings = EXCLUDED.workflow_settings;
 
-  CALL dds.update_srv_wf_settings(v_wf_settings_schema, v_source_table_schema, v_source_table_name,
-                                  v_last_update_ts, v_workflow_key, v_key);
+  ANALYZE dds.srv_wf_settings;
 
   ANALYZE dds.dm_couriers;
 END
@@ -124,27 +115,36 @@ $$
 DECLARE
   v_last_update_ts timestamp;
   v_wf_settings_schema text := 'dds';
-  v_source_table_schema text := 'stg';
-  v_source_table_name text := 'deliverysystem_deliveries';
   v_workflow_key text := 'dm_addresses';
   v_key text := 'last_update_ts';
   v_def_val text := '2022-01-01';
 BEGIN
   v_last_update_ts = dds.get_last_processed_val(v_wf_settings_schema, v_workflow_key, v_key, v_def_val)::timestamp;
 
+  WITH ds AS (
+  SELECT regexp_split_to_array(d.object_value->>'address', ',') AS addr
+       , (date_trunc('seconds', MAX(d.update_ts) OVER()))::text AS max_update_ts
+    FROM stg.deliverysystem_deliveries d
+   WHERE d.update_ts > v_last_update_ts
+  ),
+  data AS (
   INSERT INTO dds.dm_addresses(street_name, house_num, flat_num)
   SELECT DISTINCT v.addr[1] AS street_name
        , v.addr[2]::smallint AS house_num
        , substring(v.addr[3] from 5)::smallint AS flat_num
-    FROM (SELECT regexp_split_to_array(d.object_value->>'address', ',') AS addr
-            FROM stg.deliverysystem_deliveries d
-           WHERE d.update_ts > v_last_update_ts
-         ) v
-      ON CONFLICT(street_name, house_num, flat_num) DO NOTHING;
+    FROM ds v
+      ON CONFLICT(street_name, house_num, flat_num) DO NOTHING
+  )
+  INSERT INTO dds.srv_wf_settings(workflow_key, workflow_settings)
+  SELECT v_workflow_key
+       , jsonb_build_object(v_key, d.max_update_ts) 
+    FROM ds d
+   LIMIT 1
+      ON CONFLICT(workflow_key)
+      DO UPDATE SET workflow_settings = EXCLUDED.workflow_settings;
 
-  CALL dds.update_srv_wf_settings(v_wf_settings_schema, v_source_table_schema, v_source_table_name,
-                                  v_last_update_ts, v_workflow_key, v_key);
-
+  ANALYZE dds.srv_wf_settings;
+  
   ANALYZE dds.dm_addresses;
 END
 $$
@@ -156,14 +156,22 @@ $$
 DECLARE
   v_last_update_ts timestamp;
   v_wf_settings_schema text := 'dds';
-  v_source_table_schema text := 'stg';
-  v_source_table_name text := 'ordersystem_orders';
   v_workflow_key text := 'dm_timestamps';
   v_key text := 'last_update_ts';
   v_def_val text := '2022-01-01';
 BEGIN
   v_last_update_ts = dds.get_last_processed_val(v_wf_settings_schema, v_workflow_key, v_key, v_def_val)::timestamp;
 
+  WITH ds AS (
+  SELECT DISTINCT v.ts
+       , v.max_update_ts
+    FROM (SELECT (o.object_value->>'date')::timestamp AS ts
+               , (MAX(o.update_ts) OVER())::text AS max_update_ts
+            FROM stg.ordersystem_orders o
+           WHERE o.update_ts > v_last_update_ts
+         ) v
+  ),
+  data AS (
   INSERT INTO dds.dm_timestamps(ts, year, month, day, time, date)
   SELECT v.ts
        , EXTRACT(year FROM v.ts) AS year
@@ -171,14 +179,18 @@ BEGIN
        , EXTRACT(day FROM v.ts) AS day
        , ts::time AS time
        , ts::date AS date
-    FROM (SELECT DISTINCT (o.object_value->>'date')::timestamp AS ts
-            FROM stg.ordersystem_orders o
-           WHERE o.update_ts > v_last_update_ts
-         ) v
-      ON CONFLICT (ts) DO NOTHING;
+    FROM ds v
+      ON CONFLICT (ts) DO NOTHING
+  )
+  INSERT INTO dds.srv_wf_settings(workflow_key, workflow_settings)
+  SELECT v_workflow_key
+       , jsonb_build_object(v_key, d.max_update_ts) 
+    FROM ds d
+   LIMIT 1
+      ON CONFLICT(workflow_key)
+      DO UPDATE SET workflow_settings = EXCLUDED.workflow_settings;
 
-  CALL dds.update_srv_wf_settings(v_wf_settings_schema, v_source_table_schema, v_source_table_name,
-                                  v_last_update_ts, v_workflow_key, v_key);
+  ANALYZE dds.srv_wf_settings;
 
   ANALYZE dds.dm_timestamps;
 END
@@ -191,8 +203,6 @@ $$
 DECLARE
   v_last_update_ts timestamp;
   v_wf_settings_schema text := 'dds';
-  v_source_table_schema text := 'stg';
-  v_source_table_name text := 'ordersystem_restaurants';
   v_workflow_key text := 'dm_restaurants';
   v_key text := 'last_update_ts';
   v_def_val text := '2022-01-01';
@@ -205,6 +215,7 @@ BEGIN
        , r.update_ts AS active_from
        , '2099-12-31'::timestamp AS active_to
        , v_def_val::timestamp AS first_date
+       , (MAX(r.update_ts) OVER())::text AS max_update_ts
     FROM stg.ordersystem_restaurants r
    WHERE r.update_ts > v_last_update_ts
   ),
@@ -241,7 +252,8 @@ BEGIN
                        FROM dds.dm_restaurants r
                       WHERE r.restaurant_id = d.restaurant_id
                     )
-  )
+  ), 
+  data AS (
   /* Insert new version of already existing restaurant */
   INSERT INTO dds.dm_restaurants(restaurant_id, restaurant_name, active_from, active_to)
   SELECT d.restaurant_id
@@ -250,10 +262,17 @@ BEGIN
        , d.active_to
     FROM ds d
     JOIN upd_rest u
-      ON d.restaurant_id = u.restaurant_id;
+      ON d.restaurant_id = u.restaurant_id
+  )
+  INSERT INTO dds.srv_wf_settings(workflow_key, workflow_settings)
+  SELECT v_workflow_key
+       , jsonb_build_object(v_key, d.max_update_ts) 
+    FROM ds d
+   LIMIT 1
+      ON CONFLICT(workflow_key)
+      DO UPDATE SET workflow_settings = EXCLUDED.workflow_settings;
 
-  CALL dds.update_srv_wf_settings(v_wf_settings_schema, v_source_table_schema, v_source_table_name,
-                                  v_last_update_ts, v_workflow_key, v_key);
+  ANALYZE dds.srv_wf_settings;
 
   ANALYZE dds.dm_restaurants;
 END
@@ -266,8 +285,6 @@ $$
 DECLARE
   v_last_update_ts timestamp;
   v_wf_settings_schema text := 'dds';
-  v_source_table_schema text := 'stg';
-  v_source_table_name text := 'ordersystem_restaurants';
   v_workflow_key text := 'dm_products';
   v_key text := 'last_update_ts';
   v_def_val text := '2022-01-01';
@@ -282,10 +299,12 @@ BEGIN
        , v.update_ts AS active_from
        , '2099-12-31'::timestamp AS active_to
        , '2022-01-01'::timestamp AS first_date
+       , v.max_update_ts
     FROM (SELECT r.object_id AS restaurant_id
                , r.object_value->>'name' AS restaurant_name
                , jsonb_array_elements(r.object_value->'menu') AS menu_item
                , r.update_ts
+               , (MAX(r.update_ts) OVER())::text AS max_update_ts
             FROM stg.ordersystem_restaurants r
            WHERE r.update_ts > v_last_update_ts
          ) v
@@ -323,7 +342,8 @@ BEGIN
                        FROM dds.dm_products p
                       WHERE p.product_id = d.product_id
                     )
-  )
+  ),
+  data AS (
   INSERT INTO dds.dm_products(restaurant_id, product_id, product_name, product_price, active_from, active_to)
   SELECT d.restaurant_id
        , d.product_id
@@ -333,10 +353,17 @@ BEGIN
        , d.active_to
     FROM ds d
     JOIN upd_prods u
-      ON d.product_id = u.product_id;
+      ON d.product_id = u.product_id
+  )
+  INSERT INTO dds.srv_wf_settings(workflow_key, workflow_settings)
+  SELECT v_workflow_key
+       , jsonb_build_object(v_key, d.max_update_ts) 
+    FROM ds d
+   LIMIT 1
+      ON CONFLICT(workflow_key)
+      DO UPDATE SET workflow_settings = EXCLUDED.workflow_settings;
 
-  CALL dds.update_srv_wf_settings(v_wf_settings_schema, v_source_table_schema, v_source_table_name,
-                                  v_last_update_ts, v_workflow_key, v_key);
+  ANALYZE dds.srv_wf_settings;
 
   ANALYZE dds.dm_products;
 END
@@ -349,28 +376,30 @@ $$
 DECLARE
   v_last_update_ts timestamp;
   v_wf_settings_schema text := 'dds';
-  v_source_table_schema text := 'stg';
-  v_source_table_name text := 'deliverysystem_deliveries';
   v_workflow_key text := 'dm_deliveries';
   v_key text := 'last_update_ts';
   v_def_val text := '2022-01-01';
 BEGIN
   v_last_update_ts = dds.get_last_processed_val(v_wf_settings_schema, v_workflow_key, v_key, v_def_val)::timestamp;
 
+  WITH ds AS (
+  SELECT c.id AS courier_id
+       , d.object_value->>'delivery_id' AS delivery_id
+       , date_trunc('seconds', (d.object_value->>'delivery_ts')::timestamp) AS delivery_date
+       , regexp_split_to_array(d.object_value->>'address', ',') AS addr
+       , (date_trunc('seconds', MAX(d.update_ts) OVER()))::text AS max_update_ts
+    FROM stg.deliverysystem_deliveries d
+    JOIN dds.dm_couriers c
+      ON c.courier_id = d.object_value->>'courier_id'
+   WHERE d.update_ts > v_last_update_ts
+  ),
+  data AS (
   INSERT INTO dds.dm_deliveries(courier_id, address_id, delivery_date, delivery_id)
   SELECT v.courier_id
        , a.id AS address_id
        , v.delivery_date
        , v.delivery_id
-    FROM (SELECT c.id AS courier_id
-               , d.object_value->>'delivery_id' AS delivery_id
-               , date_trunc('seconds', (d.object_value->>'delivery_ts')::timestamp) AS delivery_date
-               , regexp_split_to_array(d.object_value->>'address', ',') AS addr
-            FROM stg.deliverysystem_deliveries d
-            JOIN dds.dm_couriers c
-              ON c.courier_id = d.object_value->>'courier_id'
-           WHERE d.update_ts > v_last_update_ts
-         ) v
+    FROM ds v
     JOIN dds.dm_addresses a
       ON a.street_name = v.addr[1]
      AND a.house_num = v.addr[2]::smallint
@@ -382,10 +411,17 @@ BEGIN
 	      , delivery_date = EXCLUDED.delivery_date
 	  WHERE dm_deliveries.courier_id != EXCLUDED.courier_id
 	     OR dm_deliveries.address_id != EXCLUDED.address_id
-	     OR dm_deliveries.delivery_date != EXCLUDED.delivery_date;
+	     OR dm_deliveries.delivery_date != EXCLUDED.delivery_date
+  )
+  INSERT INTO dds.srv_wf_settings(workflow_key, workflow_settings)
+  SELECT v_workflow_key
+       , jsonb_build_object(v_key, d.max_update_ts) 
+    FROM ds d
+   LIMIT 1
+      ON CONFLICT(workflow_key)
+      DO UPDATE SET workflow_settings = EXCLUDED.workflow_settings;
 
-  CALL dds.update_srv_wf_settings(v_wf_settings_schema, v_source_table_schema, v_source_table_name,
-                                  v_last_update_ts, v_workflow_key, v_key);
+  ANALYZE dds.srv_wf_settings;
 
   ANALYZE dds.dm_deliveries;
 END
@@ -398,26 +434,30 @@ $$
 DECLARE
   v_last_update_ts timestamp;
   v_wf_settings_schema text := 'dds';
-  v_source_table_schema text := 'stg';
-  v_source_table_name text := 'deliverysystem_deliveries';
   v_workflow_key text := 'fct_order_deliveries';
   v_key text := 'last_update_ts';
   v_def_val text := '2022-01-01';
 BEGIN
   v_last_update_ts = dds.get_last_processed_val(v_wf_settings_schema, v_workflow_key, v_key, v_def_val)::timestamp;
 
-  INSERT INTO dds.fct_order_deliveries(delivery_id, order_id, delivery_date, rate, tip_sum)
+  WITH ds AS (
   SELECT dl.id AS delivery_id
        , o.id AS order_id
        , date_trunc('seconds', (d.object_value->>'delivery_ts')::timestamp) AS delivery_date
        , (d.object_value->>'rate')::smallint AS rate
        , (d.object_value->>'tip_sum')::numeric AS tip_sum
+       , (date_trunc('seconds', MAX(d.update_ts) OVER()))::text AS max_update_ts
     FROM stg.deliverysystem_deliveries d
     JOIN dds.dm_deliveries dl
       ON dl.delivery_id = d.object_value->>'delivery_id'
     JOIN dds.dm_orders o
       ON o.order_key = d.object_value->>'order_id'  
    WHERE d.update_ts > v_last_update_ts
+  ),
+  data AS (
+  INSERT INTO dds.fct_order_deliveries(delivery_id, order_id, delivery_date, rate, tip_sum)
+  SELECT d.delivery_id, d.order_id, d.delivery_date, d.rate, d.tip_sum
+    FROM ds d
       ON CONFLICT(delivery_id, order_id)
       DO UPDATE
 	    SET delivery_date = EXCLUDED.delivery_date
@@ -425,10 +465,17 @@ BEGIN
 	      , tip_sum = EXCLUDED.tip_sum
 	  WHERE fct_order_deliveries.delivery_date != EXCLUDED.delivery_date
 	     OR fct_order_deliveries.rate != EXCLUDED.rate
-	     OR fct_order_deliveries.tip_sum != EXCLUDED.tip_sum;
+	     OR fct_order_deliveries.tip_sum != EXCLUDED.tip_sum
+  )
+  INSERT INTO dds.srv_wf_settings(workflow_key, workflow_settings)
+  SELECT v_workflow_key
+       , jsonb_build_object(v_key, d.max_update_ts) 
+    FROM ds d
+   LIMIT 1
+      ON CONFLICT(workflow_key)
+      DO UPDATE SET workflow_settings = EXCLUDED.workflow_settings;
 
-  CALL dds.update_srv_wf_settings(v_wf_settings_schema, v_source_table_schema, v_source_table_name,
-                                  v_last_update_ts, v_workflow_key, v_key);
+  ANALYZE dds.srv_wf_settings;
 
   ANALYZE dds.fct_order_deliveries;
 END
@@ -441,8 +488,6 @@ $$
 DECLARE
   v_last_update_ts timestamp;
   v_wf_settings_schema text := 'dds';
-  v_source_table_schema text := 'stg';
-  v_source_table_name text := 'ordersystem_orders';
   v_workflow_key text := 'dm_orders';
   v_key text := 'last_update_ts';
   v_def_val text := '2022-01-01';
@@ -455,6 +500,7 @@ BEGIN
        , t.id AS timestamp_id
        , r.object_id AS order_key
        , r.object_value->>'final_status' AS order_status
+       , (MAX(r.update_ts) OVER())::text AS max_update_ts
     FROM stg.ordersystem_orders r
     JOIN dds.dm_users u
       ON u.user_id = r.object_value->'user'->>'id'
@@ -464,7 +510,8 @@ BEGIN
       ON re.restaurant_id = r.object_value->'restaurant'->>'id'
      AND (r.object_value->>'date')::timestamp BETWEEN re.active_from AND re.active_to
    WHERE r.update_ts > v_last_update_ts
-  )
+  ),
+  data AS (
   INSERT INTO dds.dm_orders(user_id, restaurant_id, timestamp_id, order_key, order_status)
   SELECT d.user_id
        , d.restaurant_id
@@ -482,11 +529,18 @@ BEGIN
 	  WHERE dm_orders.user_id != EXCLUDED.user_id OR
 	        dm_orders.restaurant_id != EXCLUDED.restaurant_id OR
 		dm_orders.timestamp_id != EXCLUDED.timestamp_id OR
-		dm_orders.order_key != EXCLUDED.order_key;
+		dm_orders.order_key != EXCLUDED.order_key
+  )
+  INSERT INTO dds.srv_wf_settings(workflow_key, workflow_settings)
+  SELECT v_workflow_key
+       , jsonb_build_object(v_key, d.max_update_ts) 
+    FROM ds d
+   LIMIT 1
+      ON CONFLICT(workflow_key)
+      DO UPDATE SET workflow_settings = EXCLUDED.workflow_settings;
 
-  CALL dds.update_srv_wf_settings(v_wf_settings_schema, v_source_table_schema, v_source_table_name,
-                                  v_last_update_ts, v_workflow_key, v_key);
-		
+  ANALYZE dds.srv_wf_settings;
+
   ANALYZE dds.dm_orders;
 END
 $$
@@ -498,8 +552,6 @@ $$
 DECLARE
   v_last_update_ts timestamp;
   v_wf_settings_schema text := 'dds';
-  v_source_table_schema text := 'stg';
-  v_source_table_name text := 'ordersystem_orders';
   v_workflow_key text := 'fct_product_sales';
   v_key text := 'last_update_ts';
   v_def_val text := '2022-01-01';
@@ -511,12 +563,14 @@ BEGIN
        , v.order_id
        , (v.order_item->>'quantity')::int AS product_count
        , (v.order_item->>'price')::numeric AS product_price
+       , v.max_update_ts
     FROM (SELECT o.id AS order_id
                , so.object_value
                , so.object_id AS order_id_ext
                , (so.object_value->>'date')::timestamp AS order_date
                , so.object_value->'restaurant'->>'id' AS restaurant_id_ext
                , jsonb_array_elements(so.object_value->'order_items') AS order_item
+               , (MAX(so.update_ts) OVER())::text AS max_update_ts
             FROM stg.ordersystem_orders so
             JOIN dds.dm_orders o
               ON o.order_key = so.object_id
@@ -544,7 +598,8 @@ BEGIN
      AND v.order_date BETWEEN p.active_from AND p.active_to
     JOIN dds.dm_orders o
       ON o.order_key = v.order_key
-  )
+  ),
+  data AS (
   INSERT INTO dds.fct_product_sales(product_id, order_id, product_count, product_price, total_sum, bonus_payment, bonus_grant)
   SELECT o.product_id
        , o.order_id
@@ -568,10 +623,17 @@ BEGIN
 	     OR fct_product_sales.product_price != EXCLUDED.product_price
 	     OR fct_product_sales.total_sum != EXCLUDED.total_sum
 	     OR fct_product_sales.bonus_payment != EXCLUDED.bonus_payment
-	     OR fct_product_sales.bonus_grant != EXCLUDED.bonus_grant;
+	     OR fct_product_sales.bonus_grant != EXCLUDED.bonus_grant
+  )
+  INSERT INTO dds.srv_wf_settings(workflow_key, workflow_settings)
+  SELECT v_workflow_key
+       , jsonb_build_object(v_key, d.max_update_ts) 
+    FROM orders d
+   LIMIT 1
+      ON CONFLICT(workflow_key)
+      DO UPDATE SET workflow_settings = EXCLUDED.workflow_settings;
 
-  CALL dds.update_srv_wf_settings(v_wf_settings_schema, v_source_table_schema, v_source_table_name,
-                                  v_last_update_ts, v_workflow_key, v_key);
+  ANALYZE dds.srv_wf_settings;
 
   ANALYZE dds.fct_product_sales;
 END
