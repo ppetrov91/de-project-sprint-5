@@ -428,60 +428,6 @@ END
 $$
 LANGUAGE plpgsql;
 
-CREATE OR REPLACE PROCEDURE dds.fill_fct_order_deliveries()
-AS
-$$
-DECLARE
-  v_last_update_ts timestamp;
-  v_wf_settings_schema text := 'dds';
-  v_workflow_key text := 'fct_order_deliveries';
-  v_key text := 'last_update_ts';
-  v_def_val text := '2022-01-01';
-BEGIN
-  v_last_update_ts = dds.get_last_processed_val(v_wf_settings_schema, v_workflow_key, v_key, v_def_val)::timestamp;
-
-  WITH ds AS (
-  SELECT dl.id AS delivery_id
-       , o.id AS order_id
-       , date_trunc('seconds', (d.object_value->>'delivery_ts')::timestamp) AS delivery_date
-       , (d.object_value->>'rate')::smallint AS rate
-       , (d.object_value->>'tip_sum')::numeric AS tip_sum
-       , (date_trunc('seconds', MAX(d.update_ts) OVER()))::text AS max_update_ts
-    FROM stg.deliverysystem_deliveries d
-    JOIN dds.dm_deliveries dl
-      ON dl.delivery_id = d.object_value->>'delivery_id'
-    JOIN dds.dm_orders o
-      ON o.order_key = d.object_value->>'order_id'  
-   WHERE d.update_ts > v_last_update_ts
-  ),
-  data AS (
-  INSERT INTO dds.fct_order_deliveries(delivery_id, order_id, delivery_date, rate, tip_sum)
-  SELECT d.delivery_id, d.order_id, d.delivery_date, d.rate, d.tip_sum
-    FROM ds d
-      ON CONFLICT(delivery_id, order_id)
-      DO UPDATE
-	    SET delivery_date = EXCLUDED.delivery_date
-	      , rate = EXCLUDED.rate
-	      , tip_sum = EXCLUDED.tip_sum
-	  WHERE fct_order_deliveries.delivery_date != EXCLUDED.delivery_date
-	     OR fct_order_deliveries.rate != EXCLUDED.rate
-	     OR fct_order_deliveries.tip_sum != EXCLUDED.tip_sum
-  )
-  INSERT INTO dds.srv_wf_settings(workflow_key, workflow_settings)
-  SELECT v_workflow_key
-       , jsonb_build_object(v_key, d.max_update_ts) 
-    FROM ds d
-   LIMIT 1
-      ON CONFLICT(workflow_key)
-      DO UPDATE SET workflow_settings = EXCLUDED.workflow_settings;
-
-  ANALYZE dds.srv_wf_settings;
-
-  ANALYZE dds.fct_order_deliveries;
-END
-$$
-LANGUAGE plpgsql;
-
 CREATE OR REPLACE PROCEDURE dds.fill_dm_orders()
 AS
 $$
@@ -542,6 +488,61 @@ BEGIN
   ANALYZE dds.srv_wf_settings;
 
   ANALYZE dds.dm_orders;
+END
+$$
+LANGUAGE plpgsql;
+
+CREATE OR REPLACE PROCEDURE dds.fill_fct_order_deliveries()
+AS
+$$
+DECLARE
+  v_last_update_ts timestamp;
+  v_wf_settings_schema text := 'dds';
+  v_workflow_key text := 'fct_order_deliveries';
+  v_key text := 'last_update_ts';
+  v_def_val text := '2022-01-01';
+BEGIN
+  v_last_update_ts = dds.get_last_processed_val(v_wf_settings_schema, v_workflow_key, v_key, v_def_val)::timestamp;
+
+  WITH ds AS (
+  SELECT dl.id AS delivery_id
+       , o.id AS order_id
+       , date_trunc('seconds', (d.object_value->>'delivery_ts')::timestamp) AS delivery_date
+       , (d.object_value->>'rate')::smallint AS rate
+       , (d.object_value->>'tip_sum')::numeric AS tip_sum
+       , (d.object_value->>'sum')::numeric AS order_total_sum
+       , (date_trunc('seconds', MAX(d.update_ts) OVER()))::text AS max_update_ts
+    FROM stg.deliverysystem_deliveries d
+    JOIN dds.dm_deliveries dl
+      ON dl.delivery_id = d.object_value->>'delivery_id'
+    JOIN dds.dm_orders o
+      ON o.order_key = d.object_value->>'order_id'
+   WHERE d.update_ts > v_last_update_ts
+  ),
+  data AS (
+  INSERT INTO dds.fct_order_deliveries(delivery_id, order_id, delivery_date, rate, order_total_sum, tip_sum)
+  SELECT d.delivery_id, d.order_id, d.delivery_date, d.rate, d.order_total_sum, d.tip_sum
+    FROM ds d
+      ON CONFLICT(delivery_id, order_id)
+      DO UPDATE
+            SET delivery_date = EXCLUDED.delivery_date
+              , rate = EXCLUDED.rate
+              , tip_sum = EXCLUDED.tip_sum
+          WHERE fct_order_deliveries.delivery_date != EXCLUDED.delivery_date
+             OR fct_order_deliveries.rate != EXCLUDED.rate
+             OR fct_order_deliveries.tip_sum != EXCLUDED.tip_sum
+  )
+  INSERT INTO dds.srv_wf_settings(workflow_key, workflow_settings)
+  SELECT v_workflow_key
+       , jsonb_build_object(v_key, d.max_update_ts)
+    FROM ds d
+   LIMIT 1
+      ON CONFLICT(workflow_key)
+      DO UPDATE SET workflow_settings = EXCLUDED.workflow_settings;
+
+  ANALYZE dds.srv_wf_settings;
+
+  ANALYZE dds.fct_order_deliveries;
 END
 $$
 LANGUAGE plpgsql;

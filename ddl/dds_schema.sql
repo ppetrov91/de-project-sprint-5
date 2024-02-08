@@ -109,12 +109,14 @@ create table if not exists dds.fct_order_deliveries (
     order_id bigint not null,
     delivery_date timestamp not null,
     rate smallint not null default 0,
+    order_total_sum numeric(14,2) not null default 0,
     tip_sum numeric(14,2) not null default 0,
     constraint fct_order_deliveries_delivery_order_id_ukey UNIQUE(delivery_id, order_id),
     constraint fct_order_deliveries_delivery_id_fkey FOREIGN KEY(delivery_id) REFERENCES dds.dm_deliveries(id),
     constraint fct_order_deliveries_order_id_fkey FOREIGN KEY(order_id) REFERENCES dds.dm_orders(id),
     constraint fct_order_deliveries_rate_check CHECK (rate >= 0),
-    constraint fct_order_deliveries_tip_sum_check CHECK (tip_sum >= 0)
+    constraint fct_order_deliveries_tip_sum_check CHECK (tip_sum >= 0),
+    constraint fct_order_deliveries_order_total_sum_check CHECK (order_total_sum >= 0)
 );
 
 create index if not exists fod_delivery_date_ix ON dds.fct_order_deliveries(delivery_date);
