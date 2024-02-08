@@ -75,11 +75,119 @@ END
 $$
 LANGUAGE plpgsql;
 
+CREATE OR REPLACE PROCEDURE dds.fill_dm_couriers()
+AS
+$$
+DECLARE
+  v_last_update_ts timestamp;
+  v_wf_settings_schema text := 'dds';
+  v_source_table_schema text := 'stg';
+  v_source_table_name text := 'deliverysystem_couriers';
+  v_workflow_key text := 'dm_couriers';
+  v_key text := 'last_update_ts';
+  v_def_val text := '2022-01-01';
+BEGIN
+  v_last_update_ts = dds.get_last_processed_val(v_workflow_key, v_key, v_def_val)::timestamp;
+
+  INSERT INTO dds.dm_couriers(courier_id, courier_name, courier_surname)
+  SELECT v.courier_id
+       , v.courier_name_surname[1] AS courier_name
+       , v.courier_name_surname[2] AS courier_surname
+    FROM (SELECT c.object_id AS courier_id
+               , regexp_split_to_array(c.object_value->>'name', ' ') AS courier_name_surname
+            FROM stg.deliverysystem_couriers c
+           WHERE c.update_ts > v_last_update_ts
+         ) v
+      ON CONFLICT(courier_id)
+      DO UPDATE
+            SET courier_name = EXCLUDED.courier_name
+              , courier_surname = EXCLUDED.courier_surname
+          WHERE dm_couriers.courier_name != EXCLUDED.courier_name
+             OR dm_couriers.courier_surname != EXCLUDED.courier_surname;
+
+  CALL dds.update_srv_wf_settings(v_wf_settings_schema, v_source_table_schema, v_source_table_name,
+                                  v_last_update_ts, v_workflow_key, v_key);
+
+  ANALYZE dds.dm_couriers;
+END
+$$
+LANGUAGE plpgsql;
+
+CREATE OR REPLACE PROCEDURE dds.fill_dm_addresses()
+AS
+$$
+DECLARE
+  v_last_update_ts timestamp;
+  v_wf_settings_schema text := 'dds';
+  v_source_table_schema text := 'stg';
+  v_source_table_name text := 'deliverysystem_deliveries';
+  v_workflow_key text := 'dm_addresses';
+  v_key text := 'last_update_ts';
+  v_def_val text := '2022-01-01';
+BEGIN
+  v_last_update_ts = dds.get_last_processed_val(v_workflow_key, v_key, v_def_val)::timestamp;
+
+  INSERT INTO dds.dm_addresses(street_name, house_num, flat_num)
+  SELECT DISTINCT v.addr[1] AS street_name
+       , v.addr[2]::smallint AS house_num
+       , substring(v.addr[3] from 5)::smallint AS flat_num
+    FROM (SELECT regexp_split_to_array(d.object_value->>'address', ',') AS addr
+            FROM stg.deliverysystem_deliveries d
+           WHERE d.update_ts > v_last_update_ts
+         ) v
+      ON CONFLICT(street_name, house_num, flat_num) DO NOTHING;
+
+  CALL dds.update_srv_wf_settings(v_wf_settings_schema, v_source_table_schema, v_source_table_name,
+                                  v_last_update_ts, v_workflow_key, v_key);
+
+  ANALYZE dds.dm_addresses;
+END
+$$
+LANGUAGE plpgsql;
+
+CREATE OR REPLACE PROCEDURE dds.fill_dm_timestamps()
+AS
+$$
+DECLARE
+  v_last_update_ts timestamp;
+  v_wf_settings_schema text := 'dds';
+  v_source_table_schema text := 'stg';
+  v_source_table_name text := 'ordersystem_orders';
+  v_workflow_key text := 'dm_timestamps';
+  v_key text := 'last_update_ts';
+  v_def_val text := '2022-01-01';
+BEGIN
+  v_last_update_ts = dds.get_last_processed_val(v_workflow_key, v_key, v_def_val)::timestamp;
+
+  INSERT INTO dds.dm_timestamps(ts, year, month, day, time, date)
+  SELECT v.ts
+       , EXTRACT(year FROM v.ts) AS year
+       , EXTRACT(month FROM v.ts) AS month
+       , EXTRACT(day FROM v.ts) AS day
+       , ts::time AS time
+       , ts::date AS date
+    FROM (SELECT DISTINCT (o.object_value->>'date')::timestamp AS ts
+            FROM stg.ordersystem_orders o
+           WHERE o.update_ts > v_last_update_ts
+         ) v
+      ON CONFLICT (ts) DO NOTHING;
+
+  CALL dds.update_srv_wf_settings(v_wf_settings_schema, v_source_table_schema, v_source_table_name,
+                                  v_last_update_ts, v_workflow_key, v_key);
+
+  ANALYZE dds.dm_timestamps;
+END
+$$
+LANGUAGE plpgsql;
+
 CREATE OR REPLACE PROCEDURE dds.fill_dm_restaurants()
 AS
 $$
 DECLARE
   v_last_update_ts timestamp;
+  v_wf_settings_schema text := 'dds';
+  v_source_table_schema text := 'stg';
+  v_source_table_name text := 'ordersystem_restaurants';
   v_workflow_key text := 'dm_restaurants';
   v_key text := 'last_update_ts';
   v_def_val text := '2022-01-01';
@@ -92,7 +200,6 @@ BEGIN
        , r.update_ts AS active_from
        , '2099-12-31'::timestamp AS active_to
        , v_def_val::timestamp AS first_date
-       , MAX(r.update_ts) OVER() AS max_update_ts
     FROM stg.ordersystem_restaurants r
    WHERE r.update_ts > v_last_update_ts
   ),
@@ -129,9 +236,7 @@ BEGIN
                        FROM dds.dm_restaurants r
                       WHERE r.restaurant_id = d.restaurant_id
                     )
-   ORDER BY d.restaurant_id
-  ),
-  ins_new_rest_ver AS (
+  )
   /* Insert new version of already existing restaurant */
   INSERT INTO dds.dm_restaurants(restaurant_id, restaurant_name, active_from, active_to)
   SELECT d.restaurant_id
@@ -140,97 +245,12 @@ BEGIN
        , d.active_to
     FROM ds d
     JOIN upd_rest u
-      ON d.restaurant_id = u.restaurant_id
-   ORDER BY d.restaurant_id
-  )
-  /* Write update_ts to rv_wf_settings */
-  INSERT INTO dds.srv_wf_settings(workflow_key, workflow_settings)
-  SELECT v.*
-    FROM (SELECT v_workflow_key
-               , jsonb_build_object(v_key, d.max_update_ts::text) AS data
-            FROM ds d
-           LIMIT 1
-         ) v
-      ON CONFLICT(workflow_key)
-      DO UPDATE
-            SET workflow_settings = EXCLUDED.workflow_settings
-          WHERE srv_wf_settings.workflow_settings != EXCLUDED.workflow_settings;
+      ON d.restaurant_id = u.restaurant_id;
+
+  CALL dds.update_srv_wf_settings(v_wf_settings_schema, v_source_table_schema, v_source_table_name,
+                                  v_last_update_ts, v_workflow_key, v_key);
 
   ANALYZE dds.dm_restaurants;
-  ANALYZE dds.srv_wf_settings;
-END
-$$
-LANGUAGE plpgsql;
-
-CREATE OR REPLACE PROCEDURE dds.fill_dm_couriers()
-AS
-$$
-DECLARE
-  v_last_update_ts timestamp;
-  v_wf_settings_schema text := 'dds';
-  v_source_table_schema text := 'stg';
-  v_source_table_name text := 'deliverysystem_couriers';
-  v_workflow_key text := 'dm_couriers';
-  v_key text := 'last_update_ts';
-  v_def_val text := '2022-01-01';
-BEGIN
-  v_last_update_ts = dds.get_last_processed_val(v_workflow_key, v_key, v_def_val)::timestamp;
-  
-  INSERT INTO dds.dm_couriers(courier_id, courier_name, courier_surname)
-  SELECT v.courier_id
-       , v.courier_name_surname[1] AS courier_name
-       , v.courier_name_surname[2] AS courier_surname 
-    FROM (SELECT c.object_id AS courier_id
-               , regexp_split_to_array(c.object_value->>'name', ' ') AS courier_name_surname
-            FROM stg.deliverysystem_couriers c
-           WHERE c.update_ts > v_last_update_ts
-         ) v
-      ON CONFLICT(courier_id)
-      DO UPDATE
-            SET courier_name = EXCLUDED.courier_name
-              , courier_surname = EXCLUDED.courier_surname
-          WHERE dm_couriers.courier_name != EXCLUDED.courier_name
-             OR dm_couriers.courier_surname != EXCLUDED.courier_surname;
-
-  CALL dds.update_srv_wf_settings(v_wf_settings_schema, v_source_table_schema, v_source_table_name,
-                                  v_last_update_ts, v_workflow_key, v_key);
-
-  ANALYZE dds.dm_couriers;
-END
-$$
-LANGUAGE plpgsql;
-
-CREATE OR REPLACE PROCEDURE dds.fill_dm_timestamps()
-AS
-$$
-DECLARE
-  v_last_update_ts timestamp;
-  v_wf_settings_schema text := 'dds';
-  v_source_table_schema text := 'stg';
-  v_source_table_name text := 'ordersystem_orders';
-  v_workflow_key text := 'dm_timestamps';
-  v_key text := 'last_update_ts';
-  v_def_val text := '2022-01-01';
-BEGIN
-  v_last_update_ts = dds.get_last_processed_val(v_workflow_key, v_key, v_def_val)::timestamp;
-  
-  INSERT INTO dds.dm_timestamps(ts, year, month, day, time, date)
-  SELECT v.ts
-       , EXTRACT(year FROM v.ts) AS year
-       , EXTRACT(month FROM v.ts) AS month
-       , EXTRACT(day FROM v.ts) AS day
-       , ts::time AS time
-       , ts::date AS date
-    FROM (SELECT DISTINCT (o.object_value->>'date')::timestamp AS ts
-            FROM stg.ordersystem_orders o
-           WHERE o.update_ts > v_last_update_ts
-         ) v
-      ON CONFLICT (ts) DO NOTHING;
-
-  CALL dds.update_srv_wf_settings(v_wf_settings_schema, v_source_table_schema, v_source_table_name,
-                                  v_last_update_ts, v_workflow_key, v_key);
-
-  ANALYZE dds.dm_timestamps;
 END
 $$
 LANGUAGE plpgsql;
@@ -240,6 +260,9 @@ AS
 $$
 DECLARE
   v_last_update_ts timestamp;
+  v_wf_settings_schema text := 'dds';
+  v_source_table_schema text := 'stg';
+  v_source_table_name text := 'ordersystem_restaurants';
   v_workflow_key text := 'dm_products';
   v_key text := 'last_update_ts';
   v_def_val text := '2022-01-01';
@@ -254,12 +277,10 @@ BEGIN
        , v.update_ts AS active_from
        , '2099-12-31'::timestamp AS active_to
        , '2022-01-01'::timestamp AS first_date
-       , v.max_update_ts
     FROM (SELECT r.object_id AS restaurant_id
                , r.object_value->>'name' AS restaurant_name
                , jsonb_array_elements(r.object_value->'menu') AS menu_item
                , r.update_ts
-               , MAX(r.update_ts) OVER() AS max_update_ts
             FROM stg.ordersystem_restaurants r
            WHERE r.update_ts > v_last_update_ts
          ) v
@@ -297,8 +318,7 @@ BEGIN
                        FROM dds.dm_products p
                       WHERE p.product_id = d.product_id
                     )
-  ),
-  ins_new_prods_ver AS (
+  )
   INSERT INTO dds.dm_products(restaurant_id, product_id, product_name, product_price, active_from, active_to)
   SELECT d.restaurant_id
        , d.product_id
@@ -308,19 +328,72 @@ BEGIN
        , d.active_to
     FROM ds d
     JOIN upd_prods u
-      ON d.product_id = u.product_id
+      ON d.product_id = u.product_id;
+
+  CALL dds.update_srv_wf_settings(v_wf_settings_schema, v_source_table_schema, v_source_table_name,
+                                  v_last_update_ts, v_workflow_key, v_key);
+
+  ANALYZE dds.dm_products;
+END
+$$
+LANGUAGE plpgsql;
+
+CREATE OR REPLACE PROCEDURE dds.fill_dm_orders()
+AS
+$$
+DECLARE
+  v_last_update_ts timestamp;
+  v_wf_settings_schema text := 'dds';
+  v_source_table_schema text := 'stg';
+  v_source_table_name text := 'ordersystem_orders';
+  v_workflow_key text := 'dm_orders';
+  v_key text := 'last_update_ts';
+  v_def_val text := '2022-01-01';
+BEGIN
+  v_last_update_ts = dds.get_last_processed_val(v_workflow_key, v_key, v_def_val)::timestamp;
+
+  WITH ds AS (
+  SELECT u.id AS user_id
+       , re.id AS restaurant_id
+       , t.id AS timestamp_id
+       , r.object_id AS order_key
+       , r.object_value->>'final_status' AS order_status
+       , (r.object_value->>'date')::timestamp AS order_date
+       , re.active_from
+       , re.active_to
+    FROM stg.ordersystem_orders r
+    JOIN dds.dm_users u
+      ON u.user_id = r.object_value->'user'->>'id'
+    JOIN dds.dm_timestamps t
+      ON t.ts = (r.object_value->>'date')::timestamp
+    JOIN dds.dm_restaurants re
+      ON re.restaurant_id = r.object_value->'restaurant'->>'id'
+     AND (r.object_value->>'date')::timestamp BETWEEN re.active_from AND re.active_to
+   WHERE r.update_ts > v_last_update_ts
   )
-  INSERT INTO dds.srv_wf_settings(workflow_key, workflow_settings)
-  SELECT v.*
-    FROM (SELECT v_workflow_key
-               , jsonb_build_object(v_key, d.max_update_ts::text) AS data
-            FROM ds d
-           LIMIT 1
-         ) v
-      ON CONFLICT(workflow_key)
+  INSERT INTO dds.dm_orders(user_id, restaurant_id, timestamp_id, order_key, order_status)
+  SELECT d.user_id
+       , d.restaurant_id
+       , d.timestamp_id
+       , d.order_key
+       , d.order_status
+    FROM ds d
+      ON CONFLICT(order_key)
       DO UPDATE
-            SET workflow_settings = EXCLUDED.workflow_settings
-          WHERE srv_wf_settings.workflow_settings != EXCLUDED.workflow_settings;
+            SET user_id = EXCLUDED.user_id
+              , restaurant_id = EXCLUDED.restaurant_id
+              , timestamp_id = EXCLUDED.timestamp_id
+              , order_key = EXCLUDED.order_key
+              , order_status = EXCLUDED.order_status
+	  WHERE dm_orders.user_id != EXCLUDED.user_id OR
+	        dm_orders.restaurant_id != EXCLUDED.restaurant_id OR
+		dm_orders.timestamp_id != EXCLUDED.timestamp_id OR
+		dm_orders.order_key != EXCLUDED.order_key;
+
+  CALL dds.update_srv_wf_settings(v_wf_settings_schema, v_source_table_schema, v_source_table_name,
+                                  v_last_update_ts, v_workflow_key, v_key);
+		
+  ANALYZE dds.dm_orders;
 END
 $$
 LANGUAGE plpgsql;

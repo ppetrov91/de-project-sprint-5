@@ -31,6 +31,14 @@ create table if not exists dds.dm_couriers (
     courier_surname VARCHAR(255) not null
 );
 
+create table if not exists dds.dm_addresses (
+    id bigserial not null primary key,
+    street_name varchar(255) not null,
+    house_num smallint not null,
+    flat_num smallint not null,
+    constraint dm_addresses_ukey UNIQUE (street_name, house_num, flat_num)
+);
+
 create table if not exists dds.dm_timestamps (
     id bigserial not null primary key,
     ts timestamp not null,
