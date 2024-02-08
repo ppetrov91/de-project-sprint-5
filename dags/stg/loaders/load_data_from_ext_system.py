@@ -76,7 +76,7 @@ class LoadDataFromExtSystem(ABC):
 
             data = tuple(map(lambda x: 
                              (x[self._pkey_ext], Jsonb(x), 
-                              x.get(self._last_val_key, datetime.utcnow())), 
+                              x.get(self._last_val_key, datetime.now())), 
                              data))
 
             cur.executemany(sql, data)

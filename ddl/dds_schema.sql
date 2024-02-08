@@ -113,6 +113,3 @@ create table if not exists dds.fct_product_sales(
 
 CREATE INDEX IF NOT EXISTS ddf_fps_order_id_ix
     ON dds.fct_product_sales(order_id);
-
-CREATE INDEX IF NOT EXISTS ddf_fps_product_id_ix
-    ON dds.fct_product_sales(product_id);  
