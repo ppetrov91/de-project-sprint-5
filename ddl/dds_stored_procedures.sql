@@ -343,6 +343,98 @@ END
 $$
 LANGUAGE plpgsql;
 
+CREATE OR REPLACE PROCEDURE dds.fill_dm_deliveries()
+AS
+$$
+DECLARE
+  v_last_update_ts timestamp;
+  v_wf_settings_schema text := 'dds';
+  v_source_table_schema text := 'stg';
+  v_source_table_name text := 'deliverysystem_deliveries';
+  v_workflow_key text := 'dm_deliveries';
+  v_key text := 'last_update_ts';
+  v_def_val text := '2022-01-01';
+BEGIN
+  v_last_update_ts = dds.get_last_processed_val(v_wf_settings_schema, v_workflow_key, v_key, v_def_val)::timestamp;
+
+  INSERT INTO dds.dm_deliveries(courier_id, address_id, delivery_date, delivery_id)
+  SELECT v.courier_id
+       , a.id AS address_id
+       , v.delivery_date
+       , v.delivery_id
+    FROM (SELECT c.id AS courier_id
+               , d.object_value->>'delivery_id' AS delivery_id
+               , date_trunc('seconds', (d.object_value->>'delivery_ts')::timestamp) AS delivery_date
+               , regexp_split_to_array(d.object_value->>'address', ',') AS addr
+            FROM stg.deliverysystem_deliveries d
+            JOIN dds.dm_couriers c
+              ON c.courier_id = d.object_value->>'courier_id'
+           WHERE d.update_ts > v_last_update_ts
+         ) v
+    JOIN dds.dm_addresses a
+      ON a.street_name = v.addr[1]
+     AND a.house_num = v.addr[2]::smallint
+     AND a.flat_num = substring(v.addr[3] from 5)::smallint
+      ON CONFLICT(delivery_id)
+      DO UPDATE
+	    SET courier_id = EXCLUDED.courier_id
+	      , address_id = EXCLUDED.address_id
+	      , delivery_date = EXCLUDED.delivery_date
+	  WHERE dm_deliveries.courier_id != EXCLUDED.courier_id
+	     OR dm_deliveries.address_id != EXCLUDED.address_id
+	     OR dm_deliveries.delivery_date != EXCLUDED.delivery_date;
+
+  CALL dds.update_srv_wf_settings(v_wf_settings_schema, v_source_table_schema, v_source_table_name,
+                                  v_last_update_ts, v_workflow_key, v_key);
+
+  ANALYZE dds.dm_deliveries;
+END
+$$
+LANGUAGE plpgsql;
+
+CREATE OR REPLACE PROCEDURE dds.fill_fct_order_deliveries()
+AS
+$$
+DECLARE
+  v_last_update_ts timestamp;
+  v_wf_settings_schema text := 'dds';
+  v_source_table_schema text := 'stg';
+  v_source_table_name text := 'deliverysystem_deliveries';
+  v_workflow_key text := 'fct_order_deliveries';
+  v_key text := 'last_update_ts';
+  v_def_val text := '2022-01-01';
+BEGIN
+  v_last_update_ts = dds.get_last_processed_val(v_wf_settings_schema, v_workflow_key, v_key, v_def_val)::timestamp;
+
+  INSERT INTO dds.fct_order_deliveries(delivery_id, order_id, delivery_date, rate, tip_sum)
+  SELECT dl.id AS delivery_id
+       , o.id AS order_id
+       , date_trunc('seconds', (d.object_value->>'delivery_ts')::timestamp) AS delivery_date
+       , (d.object_value->>'rate')::smallint AS rate
+       , (d.object_value->>'tip_sum')::numeric AS tip_sum
+    FROM stg.deliverysystem_deliveries d
+    JOIN dds.dm_deliveries dl
+      ON dl.delivery_id = d.object_value->>'delivery_id'
+    JOIN dds.dm_orders o
+      ON o.order_key = d.object_value->>'order_id'  
+   WHERE d.update_ts > v_last_update_ts
+      ON CONFLICT(delivery_id, order_id)
+      DO UPDATE
+	    SET delivery_date = EXCLUDED.delivery_date
+	      , rate = EXCLUDED.rate
+	      , tip_sum = EXCLUDED.tip_sum
+	  WHERE fct_order_deliveries.delivery_date != EXCLUDED.delivery_date
+	     OR fct_order_deliveries.rate != EXCLUDED.rate
+	     OR fct_order_deliveries.tip_sum != EXCLUDED.tip_sum;
+
+  CALL dds.update_srv_wf_settings(v_wf_settings_schema, v_source_table_schema, v_source_table_name,
+                                  v_last_update_ts, v_workflow_key, v_key);
+
+  ANALYZE dds.fct_order_deliveries;
+END
+$$
+LANGUAGE plpgsql;
+
 CREATE OR REPLACE PROCEDURE dds.fill_dm_orders()
 AS
 $$

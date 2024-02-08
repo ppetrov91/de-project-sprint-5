@@ -70,7 +70,7 @@ create table if not exists dds.dm_products (
 CREATE INDEX IF NOT EXISTS dm_prod_rest_id_ix
     ON dds.dm_products(restaurant_id);
 
-create table if not exists dds.dm_orders(
+create table if not exists dds.dm_orders (
     id bigserial not null primary key,
     user_id bigint not null,
     restaurant_id bigint not null,
@@ -92,7 +92,34 @@ CREATE INDEX IF NOT EXISTS dm_orders_user_id_ix
 CREATE INDEX IF NOT EXISTS dm_orders_restaurant_id_ix
     ON dds.dm_orders(restaurant_id);
 
-create table if not exists dds.fct_product_sales(
+CREATE TABLE IF NOT EXISTS dds.dm_deliveries (
+    id bigserial PRIMARY KEY,
+    courier_id bigserial not null,
+    address_id bigint not null,
+    delivery_date timestamp not null,
+    delivery_id VARCHAR(24) not null,
+    constraint dm_deliveries_delivery_id_ukey UNIQUE(delivery_id),
+    constraint dm_deliveries_courier_id_fkey FOREIGN KEY(courier_id) REFERENCES dds.dm_couriers(id),
+    constraint dm_deliveries_address_id_fkey FOREIGN KEY(address_id) REFERENCES dds.dm_addresses(id)
+);
+
+create table if not exists dds.fct_order_deliveries (
+    id bigserial not null primary key,
+    delivery_id bigint not null,
+    order_id bigint not null,
+    delivery_date timestamp not null,
+    rate smallint not null default 0,
+    tip_sum numeric(14,2) not null default 0,
+    constraint fct_order_deliveries_delivery_order_id_ukey UNIQUE(delivery_id, order_id),
+    constraint fct_order_deliveries_delivery_id_fkey FOREIGN KEY(delivery_id) REFERENCES dds.dm_deliveries(id),
+    constraint fct_order_deliveries_order_id_fkey FOREIGN KEY(order_id) REFERENCES dds.dm_orders(id),
+    constraint fct_order_deliveries_rate_check CHECK (rate >= 0),
+    constraint fct_order_deliveries_tip_sum_check CHECK (tip_sum >= 0)
+);
+
+create index if not exists fod_delivery_date_ix ON dds.fct_order_deliveries(delivery_date);
+
+create table if not exists dds.fct_product_sales (
     id bigserial not null primary key,
     product_id bigint not null,
     order_id bigint not null,

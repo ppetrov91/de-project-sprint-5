@@ -16,14 +16,15 @@ def fill_dds_data_dag():
         tasks = []
 
         for n in ("dm_users", "dm_couriers", "dm_addresses", "dm_timestamps",
-                  "dm_restaurants", "dm_products", "dm_orders", "fct_product_sales"):
+                  "dm_restaurants", "dm_products", "dm_orders", "dm_deliveries", 
+                  "fct_order_deliveries", "fct_product_sales"):
             @task(task_id=f"fill_{n}")
             def t(name):
                 exec_stored_proc(conn_id="PG_WAREHOUSE_CONNECTION", query=f"CALL dds.fill_{name}()")
 
             tasks.append(t(n))
 
-        tasks[:-3] >> tasks[-3] >> tasks[-2] >> tasks[-1]
+        tasks[:-5] >> tasks[-5] >> tasks[-4] >> tasks[-3] >> tasks[-2:] 
     
     t_start = EmptyOperator(task_id="start")
     t_finish = EmptyOperator(task_id="finish")
