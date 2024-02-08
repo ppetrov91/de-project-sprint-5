@@ -1,25 +1,30 @@
 CREATE SCHEMA IF NOT EXISTS dds;
 
-CREATE OR REPLACE FUNCTION dds.get_last_processed_val(p_workflow_key text, 
+CREATE OR REPLACE FUNCTION dds.get_last_processed_val(p_schema text,
+	 					      p_workflow_key text, 
 						      p_key text,
-						      p_def_val text) 
-RETURNS text
+						      p_def_val text) RETURNS text
 AS
 $$
-SELECT COALESCE(s.workflow_settings->>p_key, v.def_val) AS res
-  FROM (SELECT p_def_val AS def_val) v
-  LEFT JOIN dds.srv_wf_settings s
-    ON s.workflow_key = p_workflow_key;
+DECLARE
+  v_res text;
+  v_query_tmpl text := 'SELECT COALESCE(s.workflow_settings->>$1, v.def_val) AS res
+  			  FROM (SELECT $2 AS def_val) v
+			  LEFT JOIN %1$s.srv_wf_settings s
+			    ON s.workflow_key = $3';
+BEGIN
+  EXECUTE FORMAT(v_query_tmpl, p_schema) INTO v_res USING p_key, p_def_val, p_workflow_key;
+  RETURN v_res;
+END
 $$
-LANGUAGE sql STABLE;
+LANGUAGE plpgsql STABLE;
 
 CREATE OR REPLACE PROCEDURE dds.update_srv_wf_settings(p_wf_settings_schema text,
 						       p_source_table_schema text,
 						       p_source_table_name text,
 						       p_last_update_ts timestamp,
 						       p_workflow_key text,
-						       p_key text
-						      )
+						       p_key text)
 AS
 $$
 DECLARE
@@ -57,7 +62,7 @@ DECLARE
   v_key text := 'last_update_ts';
   v_def_val text := '2022-01-01';
 BEGIN
-  v_last_update_ts = dds.get_last_processed_val(v_workflow_key, v_key, v_def_val)::timestamp;
+  v_last_update_ts = dds.get_last_processed_val(v_wf_settings_schema, v_workflow_key, v_key, v_def_val)::timestamp;
 
   INSERT INTO dds.dm_users(user_id, user_name, user_login)
   SELECT u.object_value->>'_id' AS user_id
@@ -87,7 +92,7 @@ DECLARE
   v_key text := 'last_update_ts';
   v_def_val text := '2022-01-01';
 BEGIN
-  v_last_update_ts = dds.get_last_processed_val(v_workflow_key, v_key, v_def_val)::timestamp;
+  v_last_update_ts = dds.get_last_processed_val(v_wf_settings_schema, v_workflow_key, v_key, v_def_val)::timestamp;
 
   INSERT INTO dds.dm_couriers(courier_id, courier_name, courier_surname)
   SELECT v.courier_id
@@ -125,7 +130,7 @@ DECLARE
   v_key text := 'last_update_ts';
   v_def_val text := '2022-01-01';
 BEGIN
-  v_last_update_ts = dds.get_last_processed_val(v_workflow_key, v_key, v_def_val)::timestamp;
+  v_last_update_ts = dds.get_last_processed_val(v_wf_settings_schema, v_workflow_key, v_key, v_def_val)::timestamp;
 
   INSERT INTO dds.dm_addresses(street_name, house_num, flat_num)
   SELECT DISTINCT v.addr[1] AS street_name
@@ -157,7 +162,7 @@ DECLARE
   v_key text := 'last_update_ts';
   v_def_val text := '2022-01-01';
 BEGIN
-  v_last_update_ts = dds.get_last_processed_val(v_workflow_key, v_key, v_def_val)::timestamp;
+  v_last_update_ts = dds.get_last_processed_val(v_wf_settings_schema, v_workflow_key, v_key, v_def_val)::timestamp;
 
   INSERT INTO dds.dm_timestamps(ts, year, month, day, time, date)
   SELECT v.ts
@@ -192,7 +197,7 @@ DECLARE
   v_key text := 'last_update_ts';
   v_def_val text := '2022-01-01';
 BEGIN
-  v_last_update_ts = dds.get_last_processed_val(v_workflow_key, v_key, v_def_val)::timestamp;
+  v_last_update_ts = dds.get_last_processed_val(v_wf_settings_schema, v_workflow_key, v_key, v_def_val)::timestamp;
 
   WITH ds AS (
   SELECT r.object_id AS restaurant_id
@@ -267,7 +272,7 @@ DECLARE
   v_key text := 'last_update_ts';
   v_def_val text := '2022-01-01';
 BEGIN
-  v_last_update_ts = dds.get_last_processed_val(v_workflow_key, v_key, v_def_val)::timestamp;
+  v_last_update_ts = dds.get_last_processed_val(v_wf_settings_schema, v_workflow_key, v_key, v_def_val)::timestamp;
 
   WITH ds AS (
   SELECT r.id AS restaurant_id
@@ -350,7 +355,7 @@ DECLARE
   v_key text := 'last_update_ts';
   v_def_val text := '2022-01-01';
 BEGIN
-  v_last_update_ts = dds.get_last_processed_val(v_workflow_key, v_key, v_def_val)::timestamp;
+  v_last_update_ts = dds.get_last_processed_val(v_wf_settings_schema, v_workflow_key, v_key, v_def_val)::timestamp;
 
   WITH ds AS (
   SELECT u.id AS user_id
@@ -407,7 +412,7 @@ DECLARE
   v_key text := 'last_update_ts';
   v_def_val text := '2022-01-01';
 BEGIN
-  v_last_update_ts = dds.get_last_processed_val(v_workflow_key, v_key, v_def_val)::timestamp;
+  v_last_update_ts = dds.get_last_processed_val(v_wf_settings_schema, v_workflow_key, v_key, v_def_val)::timestamp;
 
   WITH orders AS (
   SELECT p.id AS product_id
