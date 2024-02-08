@@ -42,7 +42,7 @@ CREATE TABLE IF NOT EXISTS stg.ordersystem_orders (
     CONSTRAINT ordersystem_orders_object_id_uindex UNIQUE(object_id)
 );
 
-CREATE INDEX IF NOT EXISTS oo_update_ts ON stg.ordersystem_orders(update_ts);
+CREATE INDEX oo_update_ts_final_status_ix ON stg.ordersystem_orders(update_ts, (object_value ->> 'final_status'));
 
 CREATE TABLE IF NOT EXISTS stg.ordersystem_restaurants (
     id bigserial not null primary key,

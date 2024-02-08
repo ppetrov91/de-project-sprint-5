@@ -358,9 +358,6 @@ BEGIN
        , t.id AS timestamp_id
        , r.object_id AS order_key
        , r.object_value->>'final_status' AS order_status
-       , (r.object_value->>'date')::timestamp AS order_date
-       , re.active_from
-       , re.active_to
     FROM stg.ordersystem_orders r
     JOIN dds.dm_users u
       ON u.user_id = r.object_value->'user'->>'id'
@@ -394,6 +391,92 @@ BEGIN
                                   v_last_update_ts, v_workflow_key, v_key);
 		
   ANALYZE dds.dm_orders;
+END
+$$
+LANGUAGE plpgsql;
+
+CREATE OR REPLACE PROCEDURE dds.fill_fct_product_sales()
+AS
+$$
+DECLARE
+  v_last_update_ts timestamp;
+  v_wf_settings_schema text := 'dds';
+  v_source_table_schema text := 'stg';
+  v_source_table_name text := 'ordersystem_orders';
+  v_workflow_key text := 'fct_product_sales';
+  v_key text := 'last_update_ts';
+  v_def_val text := '2022-01-01';
+BEGIN
+  v_last_update_ts = dds.get_last_processed_val(v_workflow_key, v_key, v_def_val)::timestamp;
+
+  WITH orders AS (
+  SELECT p.id AS product_id
+       , v.order_id
+       , (v.order_item->>'quantity')::int AS product_count
+       , (v.order_item->>'price')::numeric AS product_price
+    FROM (SELECT o.id AS order_id
+               , so.object_value
+               , so.object_id AS order_id_ext
+               , (so.object_value->>'date')::timestamp AS order_date
+               , so.object_value->'restaurant'->>'id' AS restaurant_id_ext
+               , jsonb_array_elements(so.object_value->'order_items') AS order_item
+            FROM stg.ordersystem_orders so
+            JOIN dds.dm_orders o
+              ON o.order_key = so.object_id
+           WHERE so.update_ts > v_last_update_ts
+             AND so.object_value->>'final_status' = 'CLOSED'
+          ) v
+    JOIN dds.dm_products p
+      ON p.product_id = v.order_item->>'id'
+     AND v.order_date BETWEEN p.active_from AND p.active_to
+  ),
+  bonus AS (
+  SELECT p.id AS product_id
+       , o.id AS order_id
+       , (v.prod_payment->>'bonus_grant')::numeric AS bonus_grant
+       , (v.prod_payment->>'bonus_payment')::numeric AS bonus_payment
+    FROM (SELECT e.event_value->>'order_id' AS order_key
+               , (e.event_value->>'order_date')::timestamp AS order_date
+               , jsonb_array_elements(e.event_value->'product_payments') AS prod_payment
+            FROM stg.bonussystem_events e
+           WHERE e.event_type = 'bonus_transaction'
+             AND e.event_ts > v_last_update_ts
+         ) v
+    JOIN dds.dm_products p
+      ON p.product_id = v.prod_payment->>'product_id'
+     AND v.order_date BETWEEN p.active_from AND p.active_to
+    JOIN dds.dm_orders o
+      ON o.order_key = v.order_key
+  )
+  INSERT INTO dds.fct_product_sales(product_id, order_id, product_count, product_price, total_sum, bonus_payment, bonus_grant)
+  SELECT o.product_id
+       , o.order_id
+       , o.product_count
+       , o.product_price
+       , o.product_count * o.product_price AS total_sum
+       , COALESCE(b.bonus_grant, 0) AS bonus_grant
+       , COALESCE(b.bonus_payment, 0) AS bonus_payment
+    FROM orders o
+    LEFT JOIN bonus b
+      ON b.order_id = o.order_id
+     AND b.product_id = o.product_id
+      ON CONFLICT(product_id, order_id)
+      DO UPDATE
+            SET product_count = EXCLUDED.product_count
+              , product_price = EXCLUDED.product_price
+              , total_sum = EXCLUDED.total_sum
+              , bonus_payment = EXCLUDED.bonus_payment
+              , bonus_grant = EXCLUDED.bonus_grant
+	  WHERE fct_product_sales.product_count != EXCLUDED.product_count 
+	     OR fct_product_sales.product_price != EXCLUDED.product_price
+	     OR fct_product_sales.total_sum != EXCLUDED.total_sum
+	     OR fct_product_sales.bonus_payment != EXCLUDED.bonus_payment
+	     OR fct_product_sales.bonus_grant != EXCLUDED.bonus_grant;
+
+  CALL dds.update_srv_wf_settings(v_wf_settings_schema, v_source_table_schema, v_source_table_name,
+                                  v_last_update_ts, v_workflow_key, v_key);
+
+  ANALYZE dds.fct_product_sales;
 END
 $$
 LANGUAGE plpgsql;
