@@ -29,9 +29,11 @@ DECLARE
   v_key text := 'last_update_ts';
   v_def_val text := '2022-01-01';
 BEGIN
+  /* Grab last processed ts from dds.srv_wf_settings */
   v_last_update_ts = dds.get_last_processed_val(v_wf_settings_schema, v_workflow_key, v_key, v_def_val)::timestamp;
 
   WITH ds AS (
+  /* Grab records which update_ts is greater or equal then v_last_update_ts */	
   SELECT u.object_value->>'_id' AS user_id
        , u.object_value->>'name' AS user_name
        , u.object_value->>'login' AS user_login
@@ -40,6 +42,7 @@ BEGIN
    WHERE u.update_ts >= v_last_update_ts
   ),
   data AS (
+  /* We don't excected user to be changed */	
   INSERT INTO dds.dm_users(user_id, user_name, user_login)
   SELECT d.user_id
        , d.user_name
@@ -47,13 +50,16 @@ BEGIN
     FROM ds d
       ON CONFLICT(user_id) DO NOTHING
   )
+  /* Grab the latest update_ts from new records and save it into dds.srv_wf_settings */
   INSERT INTO dds.srv_wf_settings(workflow_key, workflow_settings)
   SELECT v_workflow_key
        , jsonb_build_object(v_key, d.max_update_ts) 
     FROM ds d
    LIMIT 1
       ON CONFLICT(workflow_key)
-      DO UPDATE SET workflow_settings = EXCLUDED.workflow_settings;
+      DO UPDATE 
+            SET workflow_settings = EXCLUDED.workflow_settings
+          WHERE srv_wf_settings.workflow_settings != EXCLUDED.workflow_settings;
       
   ANALYZE dds.srv_wf_settings;
   
@@ -72,9 +78,11 @@ DECLARE
   v_key text := 'last_update_ts';
   v_def_val text := '2022-01-01';
 BEGIN
+  /* Grab last processed ts from dds.srv_wf_settings */
   v_last_update_ts = dds.get_last_processed_val(v_wf_settings_schema, v_workflow_key, v_key, v_def_val)::timestamp;
   
   WITH ds AS (
+  /* Grab records which update_ts is greater or equal then v_last_update_ts */
   SELECT c.object_id AS courier_id
        , regexp_split_to_array(c.object_value->>'name', ' ') AS courier_name_surname
        , (date_trunc('seconds', MAX(c.update_ts) OVER()))::text AS max_update_ts
@@ -82,6 +90,7 @@ BEGIN
    WHERE c.update_ts >= v_last_update_ts
   ),
   data AS (
+  /* For couriers SCD1 was chosen */
   INSERT INTO dds.dm_couriers(courier_id, courier_name, courier_surname)
   SELECT v.courier_id
        , v.courier_name_surname[1] AS courier_name
@@ -94,13 +103,16 @@ BEGIN
           WHERE dm_couriers.courier_name != EXCLUDED.courier_name
              OR dm_couriers.courier_surname != EXCLUDED.courier_surname
   )
+  /* Grab the latest update_ts from new records and save it into dds.srv_wf_settings */
   INSERT INTO dds.srv_wf_settings(workflow_key, workflow_settings)
   SELECT v_workflow_key
        , jsonb_build_object(v_key, d.max_update_ts) 
     FROM ds d
    LIMIT 1
       ON CONFLICT(workflow_key)
-      DO UPDATE SET workflow_settings = EXCLUDED.workflow_settings;
+      DO UPDATE
+	    SET workflow_settings = EXCLUDED.workflow_settings
+	  WHERE srv_wf_settings.workflow_settings != EXCLUDED.workflow_settings;
 
   ANALYZE dds.srv_wf_settings;
 
@@ -119,15 +131,18 @@ DECLARE
   v_key text := 'last_update_ts';
   v_def_val text := '2022-01-01';
 BEGIN
+  /* Grab last processed ts from dds.srv_wf_settings */
   v_last_update_ts = dds.get_last_processed_val(v_wf_settings_schema, v_workflow_key, v_key, v_def_val)::timestamp;
 
   WITH ds AS (
+  /* Grab records which update_ts is greater or equal then v_last_update_ts */
   SELECT regexp_split_to_array(d.object_value->>'address', ',') AS addr
        , (date_trunc('seconds', MAX(d.update_ts) OVER()))::text AS max_update_ts
     FROM stg.deliverysystem_deliveries d
    WHERE d.update_ts >= v_last_update_ts
   ),
   data AS (
+  /* We don't expect dm_addresses to be changed */	
   INSERT INTO dds.dm_addresses(street_name, house_num, flat_num)
   SELECT DISTINCT v.addr[1] AS street_name
        , v.addr[2]::smallint AS house_num
@@ -135,13 +150,16 @@ BEGIN
     FROM ds v
       ON CONFLICT(street_name, house_num, flat_num) DO NOTHING
   )
+  /* Grab the latest update_ts from new records and save it into dds.srv_wf_settings */
   INSERT INTO dds.srv_wf_settings(workflow_key, workflow_settings)
   SELECT v_workflow_key
        , jsonb_build_object(v_key, d.max_update_ts) 
     FROM ds d
    LIMIT 1
       ON CONFLICT(workflow_key)
-      DO UPDATE SET workflow_settings = EXCLUDED.workflow_settings;
+      DO UPDATE 
+	    SET workflow_settings = EXCLUDED.workflow_settings
+	  WHERE srv_wf_settings.workflow_settings != EXCLUDED.workflow_settings;
 
   ANALYZE dds.srv_wf_settings;
   
@@ -160,9 +178,11 @@ DECLARE
   v_key text := 'last_update_ts';
   v_def_val text := '2022-01-01';
 BEGIN
+  /* Grab last processed ts from dds.srv_wf_settings */
   v_last_update_ts = dds.get_last_processed_val(v_wf_settings_schema, v_workflow_key, v_key, v_def_val)::timestamp;
 
   WITH ds AS (
+  /* Grab records which update_ts is greater or equal then v_last_update_ts */
   SELECT DISTINCT v.ts
        , v.max_update_ts
     FROM (SELECT (o.object_value->>'date')::timestamp AS ts
@@ -172,6 +192,7 @@ BEGIN
          ) v
   ),
   data AS (
+  /* We don't expect timestamps to be changed */
   INSERT INTO dds.dm_timestamps(ts, year, month, day, time, date)
   SELECT v.ts
        , EXTRACT(year FROM v.ts) AS year
@@ -182,13 +203,16 @@ BEGIN
     FROM ds v
       ON CONFLICT (ts) DO NOTHING
   )
+  /* Grab the latest update_ts from new records and save it into dds.srv_wf_settings */
   INSERT INTO dds.srv_wf_settings(workflow_key, workflow_settings)
   SELECT v_workflow_key
        , jsonb_build_object(v_key, d.max_update_ts) 
     FROM ds d
    LIMIT 1
       ON CONFLICT(workflow_key)
-      DO UPDATE SET workflow_settings = EXCLUDED.workflow_settings;
+      DO UPDATE
+	    SET workflow_settings = EXCLUDED.workflow_settings
+	  WHERE srv_wf_settings.workflow_settings != EXCLUDED.workflow_settings;
 
   ANALYZE dds.srv_wf_settings;
 
@@ -207,9 +231,11 @@ DECLARE
   v_key text := 'last_update_ts';
   v_def_val text := '2022-01-01';
 BEGIN
+  /* Grab last processed ts from dds.srv_wf_settings */
   v_last_update_ts = dds.get_last_processed_val(v_wf_settings_schema, v_workflow_key, v_key, v_def_val)::timestamp;
 
   WITH ds AS (
+  /* Grab records which update_ts is greater or equal then v_last_update_ts */
   SELECT r.object_id AS restaurant_id
        , r.object_value->>'name' AS restaurant_name
        , r.update_ts AS active_from
@@ -234,11 +260,11 @@ BEGIN
     FROM upd_rest
   ),
   ins_new_rest AS (
-  /* When we insert first version of a restaurant fill active_to with 2022-01-01. 
+  /* When we insert first version of a restaurant set active_to with 2022-01-01. 
 
      It is vital since during joins we need to get the right version of the row.
 
-     For example, we use order_date to find the suitable version of the restaurants 
+     In this case we use order_date to find the suitable version of the restaurants 
   */
   INSERT INTO dds.dm_restaurants(restaurant_id, restaurant_name, active_from, active_to)
   SELECT d.restaurant_id
@@ -264,13 +290,16 @@ BEGIN
     JOIN upd_rest u
       ON d.restaurant_id = u.restaurant_id
   )
+  /* Grab the latest update_ts from new records and save it into dds.srv_wf_settings */
   INSERT INTO dds.srv_wf_settings(workflow_key, workflow_settings)
   SELECT v_workflow_key
        , jsonb_build_object(v_key, d.max_update_ts) 
     FROM ds d
    LIMIT 1
       ON CONFLICT(workflow_key)
-      DO UPDATE SET workflow_settings = EXCLUDED.workflow_settings;
+      DO UPDATE
+	    SET workflow_settings = EXCLUDED.workflow_settings
+	  WHERE srv_wf_settings.workflow_settings != EXCLUDED.workflow_settings;
 
   ANALYZE dds.srv_wf_settings;
 
@@ -289,9 +318,11 @@ DECLARE
   v_key text := 'last_update_ts';
   v_def_val text := '2022-01-01';
 BEGIN
+  /* Grab last processed ts from dds.srv_wf_settings */
   v_last_update_ts = dds.get_last_processed_val(v_wf_settings_schema, v_workflow_key, v_key, v_def_val)::timestamp;
 
   WITH ds AS (
+  /* Grab records which update_ts is greater or equal then v_last_update_ts */
   SELECT r.id AS restaurant_id
        , v.menu_item->>'_id' AS product_id
        , v.menu_item->>'name' AS product_name
@@ -313,6 +344,7 @@ BEGIN
      AND v.update_ts BETWEEN r.active_from AND r.active_to
   ),
   upd_prods AS (
+  /* Update current version of a restaurant if restaurant_id, product_name or product_price has been changed */
   UPDATE dds.dm_products p
      SET active_to = d.active_from
     FROM ds d
@@ -328,6 +360,12 @@ BEGIN
     FROM upd_prods u
   ),
   ins_new_prods AS (
+  /* When we insert first version of a product set active_to with 2022-01-01. 
+
+     It is vital since during joins we need to get the right version of the row.
+
+     In this case we use order_date to find the suitable version of the product
+  */
   INSERT INTO dds.dm_products(restaurant_id, product_id, product_name, product_price, active_from, active_to)
   SELECT d.restaurant_id
        , d.product_id
@@ -344,6 +382,7 @@ BEGIN
                     )
   ),
   data AS (
+  /* Insert new version of already existing restaurant */
   INSERT INTO dds.dm_products(restaurant_id, product_id, product_name, product_price, active_from, active_to)
   SELECT d.restaurant_id
        , d.product_id
@@ -355,13 +394,16 @@ BEGIN
     JOIN upd_prods u
       ON d.product_id = u.product_id
   )
+  /* Grab the latest update_ts from new records and save it into dds.srv_wf_settings */
   INSERT INTO dds.srv_wf_settings(workflow_key, workflow_settings)
   SELECT v_workflow_key
        , jsonb_build_object(v_key, d.max_update_ts) 
     FROM ds d
    LIMIT 1
       ON CONFLICT(workflow_key)
-      DO UPDATE SET workflow_settings = EXCLUDED.workflow_settings;
+      DO UPDATE 
+	    SET workflow_settings = EXCLUDED.workflow_settings
+	  WHERE srv_wf_settings.workflow_settings != EXCLUDED.workflow_settings;
 
   ANALYZE dds.srv_wf_settings;
 
@@ -380,9 +422,11 @@ DECLARE
   v_key text := 'last_update_ts';
   v_def_val text := '2022-01-01';
 BEGIN
+  /* Grab last processed ts from dds.srv_wf_settings */
   v_last_update_ts = dds.get_last_processed_val(v_wf_settings_schema, v_workflow_key, v_key, v_def_val)::timestamp;
 
   WITH ds AS (
+  /* Grab records which update_ts is greater or equal then v_last_update_ts */
   SELECT c.id AS courier_id
        , d.object_value->>'delivery_id' AS delivery_id
        , date_trunc('seconds', (d.object_value->>'delivery_ts')::timestamp) AS delivery_date
@@ -394,6 +438,7 @@ BEGIN
    WHERE d.update_ts >= v_last_update_ts
   ),
   data AS (
+  /* Use SCD1 for dm_addresses */
   INSERT INTO dds.dm_deliveries(courier_id, address_id, delivery_date, delivery_id)
   SELECT v.courier_id
        , a.id AS address_id
@@ -413,13 +458,16 @@ BEGIN
 	     OR dm_deliveries.address_id != EXCLUDED.address_id
 	     OR dm_deliveries.delivery_date != EXCLUDED.delivery_date
   )
+  /* Grab the latest update_ts from new records and save it into dds.srv_wf_settings */
   INSERT INTO dds.srv_wf_settings(workflow_key, workflow_settings)
   SELECT v_workflow_key
        , jsonb_build_object(v_key, d.max_update_ts) 
     FROM ds d
    LIMIT 1
       ON CONFLICT(workflow_key)
-      DO UPDATE SET workflow_settings = EXCLUDED.workflow_settings;
+      DO UPDATE 
+	    SET workflow_settings = EXCLUDED.workflow_settings
+	  WHERE srv_wf_settings.workflow_settings != EXCLUDED.workflow_settings;
 
   ANALYZE dds.srv_wf_settings;
 
@@ -438,9 +486,11 @@ DECLARE
   v_key text := 'last_update_ts';
   v_def_val text := '2022-01-01';
 BEGIN
+  /* Grab last processed ts from dds.srv_wf_settings */
   v_last_update_ts = dds.get_last_processed_val(v_wf_settings_schema, v_workflow_key, v_key, v_def_val)::timestamp;
 
   WITH ds AS (
+  /* Grab records which update_ts is greater or equal then v_last_update_ts */
   SELECT u.id AS user_id
        , re.id AS restaurant_id
        , t.id AS timestamp_id
@@ -477,13 +527,16 @@ BEGIN
 		dm_orders.timestamp_id != EXCLUDED.timestamp_id OR
 		dm_orders.order_key != EXCLUDED.order_key
   )
+  /* Grab the latest update_ts from new records and save it into dds.srv_wf_settings */
   INSERT INTO dds.srv_wf_settings(workflow_key, workflow_settings)
   SELECT v_workflow_key
        , jsonb_build_object(v_key, d.max_update_ts) 
     FROM ds d
    LIMIT 1
       ON CONFLICT(workflow_key)
-      DO UPDATE SET workflow_settings = EXCLUDED.workflow_settings;
+      DO UPDATE 
+	    SET workflow_settings = EXCLUDED.workflow_settings
+	  WHERE srv_wf_settings.workflow_settings != EXCLUDED.workflow_settings;
 
   ANALYZE dds.srv_wf_settings;
 
@@ -502,9 +555,11 @@ DECLARE
   v_key text := 'last_update_ts';
   v_def_val text := '2022-01-01';
 BEGIN
+  /* Grab last processed ts from dds.srv_wf_settings */
   v_last_update_ts = dds.get_last_processed_val(v_wf_settings_schema, v_workflow_key, v_key, v_def_val)::timestamp;
 
   WITH ds AS (
+  /* Grab records which update_ts is greater or equal then v_last_update_ts */
   SELECT dl.id AS delivery_id
        , o.id AS order_id
        , date_trunc('seconds', (d.object_value->>'delivery_ts')::timestamp) AS delivery_date
@@ -532,13 +587,16 @@ BEGIN
              OR fct_order_deliveries.rate != EXCLUDED.rate
              OR fct_order_deliveries.tip_sum != EXCLUDED.tip_sum
   )
+  /* Grab the latest update_ts from new records and save it into dds.srv_wf_settings */
   INSERT INTO dds.srv_wf_settings(workflow_key, workflow_settings)
   SELECT v_workflow_key
        , jsonb_build_object(v_key, d.max_update_ts)
     FROM ds d
    LIMIT 1
       ON CONFLICT(workflow_key)
-      DO UPDATE SET workflow_settings = EXCLUDED.workflow_settings;
+      DO UPDATE
+	    SET workflow_settings = EXCLUDED.workflow_settings
+	  WHERE srv_wf_settings.workflow_settings != EXCLUDED.workflow_settings;
 
   ANALYZE dds.srv_wf_settings;
 
@@ -557,9 +615,11 @@ DECLARE
   v_key text := 'last_update_ts';
   v_def_val text := '2022-01-01';
 BEGIN
+  /* Grab last processed ts from dds.srv_wf_settings */
   v_last_update_ts = dds.get_last_processed_val(v_wf_settings_schema, v_workflow_key, v_key, v_def_val)::timestamp;
 
   WITH orders AS (
+  /* Grab records which update_ts is greater or equal then v_last_update_ts */
   SELECT p.id AS product_id
        , v.order_id
        , (v.order_item->>'quantity')::int AS product_count
@@ -626,13 +686,16 @@ BEGIN
 	     OR fct_product_sales.bonus_payment != EXCLUDED.bonus_payment
 	     OR fct_product_sales.bonus_grant != EXCLUDED.bonus_grant
   )
+  /* Grab the latest update_ts from new records and save it into dds.srv_wf_settings */
   INSERT INTO dds.srv_wf_settings(workflow_key, workflow_settings)
   SELECT v_workflow_key
        , jsonb_build_object(v_key, d.max_update_ts) 
     FROM orders d
    LIMIT 1
       ON CONFLICT(workflow_key)
-      DO UPDATE SET workflow_settings = EXCLUDED.workflow_settings;
+      DO UPDATE
+	    SET workflow_settings = EXCLUDED.workflow_settings
+	  WHERE srv_wf_settings.workflow_settings != EXCLUDED.workflow_settings;
 
   ANALYZE dds.srv_wf_settings;
 

@@ -10,9 +10,11 @@ DECLARE
   v_key text := 'last_ts';
   v_def_val text := '2022-01-01';
 BEGIN
+  /* Grab last processed ts from cdm.srv_wf_settings */
   v_last_ts = dds.get_last_processed_val(v_wf_settings_schema, v_workflow_key, v_key, v_def_val)::timestamp;
 
   WITH ds AS (
+  /* Grab records which update_ts is greater or equal then v_last_ts */
   SELECT o.restaurant_id
        , r.restaurant_name
        , t."date"
@@ -66,6 +68,7 @@ BEGIN
               , order_processing_fee = EXCLUDED.order_processing_fee
               , restaurant_reward_sum = EXCLUDED.restaurant_reward_sum
    )
+   /* Grab the latest ts from new records and save it into dds.srv_wf_settings */
    INSERT INTO cdm.srv_wf_settings(workflow_key, workflow_settings)
    SELECT v_workflow_key
         , jsonb_build_object(v_key, d.max_ts) 
@@ -113,6 +116,7 @@ BEGIN
                  THEN GREATEST(0.08 * f.order_total_sum, 175)
                ELSE GREATEST(0.1 * f.order_total_sum, 200)  
              END) AS courier_order_sum
+
        , SUM(f.tip_sum) AS courier_tips_sum
        , MAX(d.delivery_date) AS max_delivery_date
     FROM dds.fct_order_deliveries f
