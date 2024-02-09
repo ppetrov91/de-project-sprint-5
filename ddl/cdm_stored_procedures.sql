@@ -72,7 +72,9 @@ BEGIN
      FROM ds d
     LIMIT 1
        ON CONFLICT(workflow_key)
-       DO UPDATE SET workflow_settings = EXCLUDED.workflow_settings;
+       DO UPDATE 
+             SET workflow_settings = EXCLUDED.workflow_settings
+           WHERE srv_wf_settings.workflow_settings != EXCLUDED.workflow_settings;
 
    ANALYZE cdm.srv_wf_settings;
 
@@ -196,7 +198,9 @@ BEGIN
     FROM ds d
    LIMIT 1
       ON CONFLICT(workflow_key)
-      DO UPDATE SET workflow_settings = EXCLUDED.workflow_settings;
+      DO UPDATE 
+            SET workflow_settings = EXCLUDED.workflow_settings
+          WHERE srv_wf_settings.workflow_settings != EXCLUDED.workflow_settings;
 
   ANALYZE cdm.srv_wf_settings;
 
