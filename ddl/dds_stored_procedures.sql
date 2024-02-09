@@ -37,7 +37,7 @@ BEGIN
        , u.object_value->>'login' AS user_login
        , (MAX(u.update_ts) OVER())::text AS max_update_ts
     FROM stg.ordersystem_users u
-   WHERE u.update_ts > v_last_update_ts
+   WHERE u.update_ts >= v_last_update_ts
   ),
   data AS (
   INSERT INTO dds.dm_users(user_id, user_name, user_login)
@@ -79,7 +79,7 @@ BEGIN
        , regexp_split_to_array(c.object_value->>'name', ' ') AS courier_name_surname
        , (date_trunc('seconds', MAX(c.update_ts) OVER()))::text AS max_update_ts
     FROM stg.deliverysystem_couriers c
-   WHERE c.update_ts > v_last_update_ts
+   WHERE c.update_ts >= v_last_update_ts
   ),
   data AS (
   INSERT INTO dds.dm_couriers(courier_id, courier_name, courier_surname)
@@ -125,7 +125,7 @@ BEGIN
   SELECT regexp_split_to_array(d.object_value->>'address', ',') AS addr
        , (date_trunc('seconds', MAX(d.update_ts) OVER()))::text AS max_update_ts
     FROM stg.deliverysystem_deliveries d
-   WHERE d.update_ts > v_last_update_ts
+   WHERE d.update_ts >= v_last_update_ts
   ),
   data AS (
   INSERT INTO dds.dm_addresses(street_name, house_num, flat_num)
@@ -168,7 +168,7 @@ BEGIN
     FROM (SELECT (o.object_value->>'date')::timestamp AS ts
                , (MAX(o.update_ts) OVER())::text AS max_update_ts
             FROM stg.ordersystem_orders o
-           WHERE o.update_ts > v_last_update_ts
+           WHERE o.update_ts >= v_last_update_ts
          ) v
   ),
   data AS (
@@ -217,7 +217,7 @@ BEGIN
        , v_def_val::timestamp AS first_date
        , (MAX(r.update_ts) OVER())::text AS max_update_ts
     FROM stg.ordersystem_restaurants r
-   WHERE r.update_ts > v_last_update_ts
+   WHERE r.update_ts >= v_last_update_ts
   ),
   upd_rest AS (
   /*Update current version if its name differs from name which was gathered by orders system*/	
@@ -306,7 +306,7 @@ BEGIN
                , r.update_ts
                , (MAX(r.update_ts) OVER())::text AS max_update_ts
             FROM stg.ordersystem_restaurants r
-           WHERE r.update_ts > v_last_update_ts
+           WHERE r.update_ts >= v_last_update_ts
          ) v
     JOIN dds.dm_restaurants r
       ON r.restaurant_id = v.restaurant_id
@@ -391,7 +391,7 @@ BEGIN
     FROM stg.deliverysystem_deliveries d
     JOIN dds.dm_couriers c
       ON c.courier_id = d.object_value->>'courier_id'
-   WHERE d.update_ts > v_last_update_ts
+   WHERE d.update_ts >= v_last_update_ts
   ),
   data AS (
   INSERT INTO dds.dm_deliveries(courier_id, address_id, delivery_date, delivery_id)
@@ -455,7 +455,7 @@ BEGIN
     JOIN dds.dm_restaurants re
       ON re.restaurant_id = r.object_value->'restaurant'->>'id'
      AND (r.object_value->>'date')::timestamp BETWEEN re.active_from AND re.active_to
-   WHERE r.update_ts > v_last_update_ts
+   WHERE r.update_ts >= v_last_update_ts
   ),
   data AS (
   INSERT INTO dds.dm_orders(user_id, restaurant_id, timestamp_id, order_key, order_status)
@@ -517,7 +517,7 @@ BEGIN
       ON dl.delivery_id = d.object_value->>'delivery_id'
     JOIN dds.dm_orders o
       ON o.order_key = d.object_value->>'order_id'
-   WHERE d.update_ts > v_last_update_ts
+   WHERE d.update_ts >= v_last_update_ts
   ),
   data AS (
   INSERT INTO dds.fct_order_deliveries(delivery_id, order_id, delivery_date, rate, order_total_sum, tip_sum)
@@ -575,7 +575,7 @@ BEGIN
             FROM stg.ordersystem_orders so
             JOIN dds.dm_orders o
               ON o.order_key = so.object_id
-           WHERE so.update_ts > v_last_update_ts
+           WHERE so.update_ts >= v_last_update_ts
              AND so.object_value->>'final_status' = 'CLOSED'
           ) v
     JOIN dds.dm_products p
@@ -592,7 +592,7 @@ BEGIN
                , jsonb_array_elements(e.event_value->'product_payments') AS prod_payment
             FROM stg.bonussystem_events e
            WHERE e.event_type = 'bonus_transaction'
-             AND e.event_ts > v_last_update_ts
+             AND e.event_ts >= v_last_update_ts
          ) v
     JOIN dds.dm_products p
       ON p.product_id = v.prod_payment->>'product_id'
